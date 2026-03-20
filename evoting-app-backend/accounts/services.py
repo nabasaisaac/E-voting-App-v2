@@ -1,5 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.db.models import Q
+from rest_framework.exceptions import ValidationError
 
 from accounts.models import VoterProfile
 from audit.services import AuditService
@@ -65,9 +67,13 @@ class VoterRegistrationService:
     def __init__(self):
         self._audit = AuditService()
 
+    @transaction.atomic
     def register(self, validated_data):
         names = validated_data["full_name"].split(" ", 1)
-        station = VotingStation.objects.get(pk=validated_data["station_id"])
+        try:
+            station = VotingStation.objects.get(pk=validated_data["station_id"], is_active=True)
+        except VotingStation.DoesNotExist as e:
+            raise ValidationError({"station_id": "Invalid or inactive voting station."}) from e
 
         user = User.objects.create_user(
             username=validated_data["email"],
@@ -149,7 +155,11 @@ class VoterManagementService:
         return user
 
     def verify_all_pending(self, verified_by):
-        unverified = User.objects.filter(is_verified=False)
+        unverified = User.objects.filter(
+            role=User.Role.VOTER,
+            is_verified=False,
+            is_active=True,
+        )
         count = unverified.update(is_verified=True)
         self._audit.log(
             "VERIFY_ALL_VOTERS",
@@ -173,7 +183,7 @@ class VoterManagementService:
         qs = User.objects.filter(role=User.Role.VOTER).select_related("voter_profile")
 
         if name := query_params.get("name"):
-            qs = qs.filter(first_name__icontains=name) | qs.filter(last_name__icontains=name)
+            qs = qs.filter(Q(first_name__icontains=name) | Q(last_name__icontains=name))
         if card := query_params.get("card"):
             qs = qs.filter(voter_profile__voter_card_number=card)
         if nid := query_params.get("national_id"):
