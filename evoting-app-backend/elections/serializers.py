@@ -29,8 +29,8 @@ class VotingStationCreateSerializer(serializers.ModelSerializer):
         ]
 
     def validate_capacity(self, value):
-        if value < 0:
-            raise serializers.ValidationError("Capacity must be positive.")
+        if value < 1:
+            raise serializers.ValidationError("Capacity must be at least 1.")
         return value
 
 
@@ -65,7 +65,7 @@ class CandidateCreateSerializer(serializers.ModelSerializer):
 
     def validate_date_of_birth(self, value):
         today = date.today()
-        age = today.year - value.year
+        age = today.year - value.year - ((today.month, today.day) < (value.month, value.day))
         if age < settings.MIN_CANDIDATE_AGE:
             raise serializers.ValidationError(
                 f"Candidate must be at least {settings.MIN_CANDIDATE_AGE} years old."
@@ -116,7 +116,7 @@ class PositionCreateSerializer(serializers.ModelSerializer):
         return value
 
     def validate_max_winners(self, value):
-        if value < 0:
+        if value < 1:
             raise serializers.ValidationError("Must be at least 1.")
         return value
 
@@ -156,12 +156,27 @@ class PollCreateSerializer(serializers.Serializer):
     position_ids = serializers.ListField(child=serializers.IntegerField(), min_length=1)
     station_ids = serializers.ListField(child=serializers.IntegerField(), min_length=1)
 
+    def validate_position_ids(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("Duplicate position IDs are not allowed.")
+        if len(value) > 100:
+            raise serializers.ValidationError("Too many positions supplied.")
+        return value
+
+    def validate_station_ids(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("Duplicate station IDs are not allowed.")
+        if len(value) > 500:
+            raise serializers.ValidationError("Too many stations supplied.")
+        return value
+
     def validate(self, data):
         if data["end_date"] < data["start_date"]:
             raise serializers.ValidationError({"end_date": "End date must be after start date."})
         invalid_positions = set(data["position_ids"]) - set(
             Position.objects.filter(
-                pk__in=data["position_ids"]
+                pk__in=data["position_ids"],
+                is_active=True,
             ).values_list("pk", flat=True)
         )
         if invalid_positions:
@@ -176,6 +191,21 @@ class PollCreateSerializer(serializers.Serializer):
         if invalid_stations:
             raise serializers.ValidationError(
                 {"station_ids": f"Invalid or inactive stations: {invalid_stations}"}
+            )
+
+        overlaps = (
+            Poll.objects.filter(
+                stations__in=data["station_ids"],
+                start_date__lte=data["end_date"],
+                end_date__gte=data["start_date"],
+                status__in=[Poll.Status.DRAFT, Poll.Status.OPEN],
+            )
+            .distinct()
+            .exists()
+        )
+        if overlaps:
+            raise serializers.ValidationError(
+                {"detail": "Another draft/open poll overlaps these dates for one or more selected stations."}
             )
         return data
 

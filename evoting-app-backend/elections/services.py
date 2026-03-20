@@ -1,4 +1,7 @@
+from datetime import date
+
 from django.db import transaction
+from rest_framework.exceptions import ValidationError
 
 from audit.services import AuditService
 from elections.models import Candidate, Poll, PollPosition, Position, VotingStation
@@ -47,12 +50,30 @@ class CandidateService:
             qs = qs.filter(party__icontains=party)
         if education := query_params.get("education"):
             qs = qs.filter(education=education)
+        # Keep this as a QuerySet (no Python list filtering), so pagination/ordering work.
+        # Age filter derived from date_of_birth.
         if min_age := query_params.get("min_age"):
-            qs = [c for c in qs if c.age >= int(min_age)]
-            return qs
+            try:
+                years = int(min_age)
+            except (TypeError, ValueError) as e:
+                raise ValidationError({"min_age": "Must be an integer."}) from e
+            today = date.today()
+            try:
+                cutoff = today.replace(year=today.year - years)
+            except ValueError:
+                cutoff = today.replace(month=2, day=28, year=today.year - years)
+            qs = qs.filter(date_of_birth__lte=cutoff)
         if max_age := query_params.get("max_age"):
-            qs = [c for c in qs if c.age <= int(max_age)]
-            return qs
+            try:
+                years = int(max_age)
+            except (TypeError, ValueError) as e:
+                raise ValidationError({"max_age": "Must be an integer."}) from e
+            today = date.today()
+            try:
+                cutoff = today.replace(year=today.year - years)
+            except ValueError:
+                cutoff = today.replace(month=2, day=28, year=today.year - years)
+            qs = qs.filter(date_of_birth__gte=cutoff)
         return qs
 
 
@@ -160,7 +181,7 @@ class PollService:
 
     def update(self, poll, validated_data, updated_by):
         if poll.status == Poll.Status.OPEN:
-            raise ValueError("Cannot update an open poll. Close it first.")
+            raise ValidationError({"detail": "Cannot update an open poll. Close it first."})
         for key, value in validated_data.items():
             setattr(poll, key, value)
         poll.save()
@@ -175,7 +196,7 @@ class PollService:
     def delete(self, poll_id, deleted_by):
         poll = Poll.objects.get(pk=poll_id)
         if poll.status == Poll.Status.OPEN:
-            raise ValueError("Cannot delete an open poll. Close it first.")
+            raise ValidationError({"detail": "Cannot delete an open poll. Close it first."})
         title = poll.title
         poll.delete()
         self._audit.log(
@@ -186,25 +207,26 @@ class PollService:
 
     def toggle_status(self, poll_id, action, toggled_by):
         poll = Poll.objects.prefetch_related("poll_positions__candidates").get(pk=poll_id)
+        previous_status = poll.status
 
         if action == "open":
             if poll.status not in (Poll.Status.DRAFT, Poll.Status.CLOSED):
-                raise ValueError(f"Cannot open a poll with status: {poll.status}")
+                raise ValidationError({"detail": f"Cannot open a poll with status: {poll.status}"})
             if poll.status == Poll.Status.DRAFT:
                 has_candidates = any(
                     pp.candidates.exists() for pp in poll.poll_positions.all()
                 )
                 if not has_candidates:
-                    raise ValueError("Cannot open - no candidates assigned.")
+                    raise ValidationError({"detail": "Cannot open - no candidates assigned."})
             poll.status = Poll.Status.OPEN
-            log_action = "OPEN_POLL" if poll.status == Poll.Status.DRAFT else "REOPEN_POLL"
+            log_action = "OPEN_POLL" if previous_status == Poll.Status.DRAFT else "REOPEN_POLL"
         elif action == "close":
             if poll.status != Poll.Status.OPEN:
-                raise ValueError("Only open polls can be closed.")
+                raise ValidationError({"detail": "Only open polls can be closed."})
             poll.status = Poll.Status.CLOSED
             log_action = "CLOSE_POLL"
         else:
-            raise ValueError(f"Invalid action: {action}")
+            raise ValidationError({"detail": f"Invalid action: {action}"})
 
         poll.save(update_fields=["status"])
         self._audit.log(
@@ -219,7 +241,7 @@ class PollService:
             pk=poll_position_id
         )
         if poll_position.poll.status == Poll.Status.OPEN:
-            raise ValueError("Cannot modify candidates of an open poll.")
+            raise ValidationError({"detail": "Cannot modify candidates of an open poll."})
 
         eligible = Candidate.objects.filter(
             pk__in=candidate_ids,
