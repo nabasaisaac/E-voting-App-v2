@@ -3,6 +3,7 @@ from collections import defaultdict
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Count, Q
+from rest_framework.exceptions import ValidationError
 
 from audit.services import AuditService
 from elections.models import Candidate, Poll, PollPosition
@@ -17,54 +18,81 @@ class VoteCastingService:
 
     @transaction.atomic
     def cast(self, voter, validated_data):
-        poll_id = validated_data["poll_id"]
-        poll = Poll.objects.prefetch_related(
-            "poll_positions__candidates", "stations"
-        ).get(pk=poll_id)
+        try:
+            poll_id = validated_data["poll_id"]
+            poll = Poll.objects.prefetch_related(
+                "poll_positions__candidates", "stations"
+            ).get(pk=poll_id)
 
-        self._validate_poll_eligibility(voter, poll)
+            self._validate_poll_eligibility(voter, poll)
 
-        created_votes = []
-        for vote_item in validated_data["votes"]:
-            pp = PollPosition.objects.get(pk=vote_item["poll_position_id"])
-            self._validate_position_vote(pp, poll, vote_item)
+            # App-level protection (note: still subject to races without DB constraints).
+            if Vote.objects.filter(poll=poll, voter=voter).exists():
+                raise ValidationError({"detail": "You have already voted in this poll."})
 
-            vote = Vote(
-                poll=poll,
-                poll_position=pp,
-                voter=voter,
-                station=voter.voter_profile.station,
-                abstained=vote_item.get("abstain", False),
+            vote_items = validated_data["votes"]
+            poll_position_ids = [item["poll_position_id"] for item in vote_items]
+            poll_positions = {
+                pp.id: pp
+                for pp in PollPosition.objects.filter(pk__in=poll_position_ids).select_related("poll")
+            }
+
+            created_votes = []
+            for vote_item in vote_items:
+                pp = poll_positions.get(vote_item["poll_position_id"])
+                if not pp:
+                    raise ValidationError(
+                        {"votes": f"Invalid poll_position_id: {vote_item['poll_position_id']}"}
+                    )
+
+                self._validate_position_vote(pp, poll, vote_item)
+
+                vote = Vote(
+                    poll=poll,
+                    poll_position=pp,
+                    voter=voter,
+                    station=voter.voter_profile.station,
+                    abstained=vote_item.get("abstain", False),
+                )
+                if not vote.abstained:
+                    candidate_id = vote_item.get("candidate_id")
+                    if not candidate_id:
+                        raise ValidationError({"votes": "candidate_id is required when not abstaining."})
+                    vote.candidate_id = candidate_id
+                vote.save()
+                created_votes.append(vote)
+
+            vote_hash = created_votes[0].vote_hash if created_votes else ""
+            self._audit.log(
+                "CAST_VOTE",
+                voter.voter_profile.voter_card_number,
+                f"Voted in poll: {poll.title} (Hash: {vote_hash})",
             )
-            if not vote.abstained:
-                vote.candidate_id = vote_item["candidate_id"]
-            vote.save()
-            created_votes.append(vote)
-
-        vote_hash = created_votes[0].vote_hash if created_votes else ""
-        self._audit.log(
-            "CAST_VOTE",
-            voter.voter_profile.voter_card_number,
-            f"Voted in poll: {poll.title} (Hash: {vote_hash})",
-        )
-        return created_votes
+            return created_votes
+        except ValidationError as e:
+            # Audit failed attempts too (important for e-voting).
+            identifier = getattr(getattr(voter, "voter_profile", None), "voter_card_number", str(voter.pk))
+            self._audit.log("VOTE_FAILED", identifier, str(e.detail))
+            raise
 
     def _validate_poll_eligibility(self, voter, poll):
+        if not voter.is_verified:
+            raise ValidationError({"detail": "You must be verified to vote."})
+        if not voter.is_active:
+            raise ValidationError({"detail": "Your account is deactivated."})
         if poll.status != Poll.Status.OPEN:
-            raise ValueError("This poll is not currently open for voting.")
+            raise ValidationError({"detail": "This poll is not currently open for voting."})
 
         if not poll.stations.filter(pk=voter.voter_profile.station_id).exists():
-            raise ValueError("Your station is not assigned to this poll.")
+            raise ValidationError({"detail": "Your station is not assigned to this poll."})
 
     def _validate_position_vote(self, poll_position, poll, vote_item):
         if poll_position.poll_id != poll.id:
-            raise ValueError(
-                f"Position {poll_position.id} does not belong to this poll."
-            )
+            raise ValidationError({"votes": f"Position {poll_position.id} does not belong to this poll."})
         if not vote_item.get("abstain") and vote_item.get("candidate_id"):
             if not poll_position.candidates.filter(pk=vote_item["candidate_id"]).exists():
-                raise ValueError(
-                    f"Candidate {vote_item['candidate_id']} is not assigned to this position."
+                raise ValidationError(
+                    {"votes": f"Candidate {vote_item['candidate_id']} is not assigned to this position."}
                 )
 
 
