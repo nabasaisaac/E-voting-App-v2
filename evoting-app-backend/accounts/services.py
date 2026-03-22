@@ -73,6 +73,11 @@ class VoterRegistrationService:
         try:
             station = VotingStation.objects.get(pk=validated_data["station_id"], is_active=True)
         except VotingStation.DoesNotExist as e:
+            self._audit.log(
+                "REGISTER_FAILED",
+                validated_data.get("email") or validated_data.get("full_name", ""),
+                f"Invalid or inactive station_id: {validated_data.get('station_id')}",
+            )
             raise ValidationError({"station_id": "Invalid or inactive voting station."}) from e
 
         user = User.objects.create_user(
