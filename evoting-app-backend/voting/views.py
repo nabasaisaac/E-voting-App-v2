@@ -81,8 +81,10 @@ class CastVoteView(APIView):
         try:
             votes = service.cast(request.user, serializer.validated_data)
         except Poll.DoesNotExist:
+            # 404 = the poll resource does not exist.
             return Response({"detail": "Poll not found."}, status=status.HTTP_404_NOT_FOUND)
         except ValidationError as e:
+            # 400 = poll exists but the request violates validation/business rules.
             return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
 
         vote_hash = votes[0].vote_hash if votes else ""
