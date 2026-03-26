@@ -69,10 +69,12 @@ class VoterRegistrationService:
 
     @transaction.atomic
     def register(self, validated_data):
+        # Registration creates both `User` and `VoterProfile`; atomic prevents partial writes.
         names = validated_data["full_name"].split(" ", 1)
         try:
             station = VotingStation.objects.get(pk=validated_data["station_id"], is_active=True)
         except VotingStation.DoesNotExist as e:
+            # Keep a trace of rejected registrations (important for auditability and support triage).
             self._audit.log(
                 "REGISTER_FAILED",
                 validated_data.get("email") or validated_data.get("full_name", ""),
@@ -160,6 +162,7 @@ class VoterManagementService:
         return user
 
     def verify_all_pending(self, verified_by):
+        # Scope strictly to active voters; avoids accidentally verifying non-voter accounts.
         unverified = User.objects.filter(
             role=User.Role.VOTER,
             is_verified=False,
