@@ -42,3 +42,26 @@ This section summarizes backend changes and where they were made.
   - `CastVoteView` now returns:
     - **404** when the poll does not exist
     - **400** with DRF validation details when vote casting fails via `ValidationError`
+
+### Accounts (`evoting-app-backend/accounts/`)
+
+- **`evoting-app-backend/accounts/services.py`**
+  - **Mistake**: registration failures were not audited (e.g., invalid/inactive `station_id` caused a rejection but left no audit trail).
+  - **Fix**: when registration fails due to an invalid/inactive station, the service now logs `REGISTER_FAILED` with the reason before raising DRF `ValidationError`.
+
+### Audit (`evoting-app-backend/audit/`)
+
+- **`evoting-app-backend/audit/services.py`**
+  - **Mistake**: `get_recent()` returned arbitrary/oldest logs because it didn?t order by timestamp.
+  - **Fix**: `get_recent()` now orders by `-timestamp` so the newest audit entries are returned first.
+
+### Voting services (`evoting-app-backend/voting/`)
+
+- **`evoting-app-backend/voting/services.py`**
+  - **Mistake**: business-rule failures used `ValueError`, service trusted the view to enforce verification, and failed vote attempts were not logged.
+  - **Fix**:
+    - raises DRF `ValidationError` for business-rule failures (consistent API errors)
+    - enforces `is_verified` and `is_active` inside the service (defensive)
+    - blocks repeat voting attempts per poll (application-level check)
+    - logs `VOTE_FAILED` audit entries on validation failures
+    - reduces N+1 queries by bulk-fetching poll positions for the submitted votes
