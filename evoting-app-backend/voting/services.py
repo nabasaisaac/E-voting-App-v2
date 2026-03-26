@@ -26,7 +26,8 @@ class VoteCastingService:
 
             self._validate_poll_eligibility(voter, poll)
 
-            # App-level protection (note: still subject to races without DB constraints).
+            # App-level protection: prevents repeat voting in normal operation.
+            # Note: without a DB-level uniqueness constraint, two concurrent requests could still race.
             if Vote.objects.filter(poll=poll, voter=voter).exists():
                 raise ValidationError({"detail": "You have already voted in this poll."})
 
@@ -70,7 +71,8 @@ class VoteCastingService:
             )
             return created_votes
         except ValidationError as e:
-            # Audit failed attempts too (important for e-voting).
+            # Audit failed attempts too (important for e-voting): we want traceability of rejected votes
+            # without exposing sensitive details to other voters.
             identifier = getattr(getattr(voter, "voter_profile", None), "voter_card_number", str(voter.pk))
             self._audit.log("VOTE_FAILED", identifier, str(e.detail))
             raise
