@@ -61,6 +61,7 @@ class CandidateService:
             try:
                 cutoff = today.replace(year=today.year - years)
             except ValueError:
+                # Handle Feb 29 on non-leap years deterministically.
                 cutoff = today.replace(month=2, day=28, year=today.year - years)
             qs = qs.filter(date_of_birth__lte=cutoff)
         if max_age := query_params.get("max_age"):
@@ -72,6 +73,7 @@ class CandidateService:
             try:
                 cutoff = today.replace(year=today.year - years)
             except ValueError:
+                # Handle Feb 29 on non-leap years deterministically.
                 cutoff = today.replace(month=2, day=28, year=today.year - years)
             qs = qs.filter(date_of_birth__gte=cutoff)
         return qs
