@@ -157,15 +157,19 @@ class PollCreateSerializer(serializers.Serializer):
     station_ids = serializers.ListField(child=serializers.IntegerField(), min_length=1)
 
     def validate_position_ids(self, value):
+        # Prevent duplicate IDs which can cause confusing UI/assignment behavior and wasted DB work.
         if len(value) != len(set(value)):
             raise serializers.ValidationError("Duplicate position IDs are not allowed.")
+        # Basic abuse guard to avoid extreme payload sizes.
         if len(value) > 100:
             raise serializers.ValidationError("Too many positions supplied.")
         return value
 
     def validate_station_ids(self, value):
+        # Prevent duplicate IDs and reduce potential for accidental over-allocation.
         if len(value) != len(set(value)):
             raise serializers.ValidationError("Duplicate station IDs are not allowed.")
+        # Basic abuse guard to avoid extreme payload sizes.
         if len(value) > 500:
             raise serializers.ValidationError("Too many stations supplied.")
         return value
@@ -194,6 +198,8 @@ class PollCreateSerializer(serializers.Serializer):
             )
 
         overlaps = (
+            # Scheduling conflict rule: avoid having multiple draft/open polls active for the same station(s)
+            # during overlapping date ranges.
             Poll.objects.filter(
                 stations__in=data["station_ids"],
                 start_date__lte=data["end_date"],
