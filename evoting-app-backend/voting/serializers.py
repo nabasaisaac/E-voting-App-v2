@@ -13,9 +13,15 @@ class CastVoteSerializer(serializers.Serializer):
 
     def validate_votes(self, value):
         for item in value:
-            if item.get("abstain") and item.get("candidate_id"):
+            abstain = bool(item.get("abstain"))
+            candidate_id = item.get("candidate_id")
+            if abstain and candidate_id:
                 raise serializers.ValidationError(
                     "Cannot both abstain and select a candidate."
+                )
+            if not abstain and not candidate_id:
+                raise serializers.ValidationError(
+                    "You must either select a candidate or abstain."
                 )
         return value
 

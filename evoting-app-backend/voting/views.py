@@ -2,6 +2,7 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.exceptions import ValidationError
 
 from accounts.permissions import IsAdminOrReadOnlyVoter, IsAdminUser, IsVerifiedVoter
 from elections.models import Poll
@@ -79,8 +80,10 @@ class CastVoteView(APIView):
         service = VoteCastingService()
         try:
             votes = service.cast(request.user, serializer.validated_data)
-        except (ValueError, Poll.DoesNotExist) as e:
-            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Poll.DoesNotExist:
+            return Response({"detail": "Poll not found."}, status=status.HTTP_404_NOT_FOUND)
+        except ValidationError as e:
+            return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
 
         vote_hash = votes[0].vote_hash if votes else ""
         return Response({
