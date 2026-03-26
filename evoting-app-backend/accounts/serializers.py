@@ -22,6 +22,7 @@ class UserSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "date_joined"]
         extra_kwargs = {
+            # Never serialize password hashes back to clients.
             "password": {"write_only": True},
         }
 
@@ -72,6 +73,7 @@ class VoterRegistrationSerializer(serializers.Serializer):
 
     def validate_date_of_birth(self, value):
         today = date.today()
+        # Month/day-aware age check prevents off-by-one errors around birthdays.
         age = today.year - value.year - ((today.month, today.day) < (value.month, value.day))
         if age < 18:
             raise serializers.ValidationError(
@@ -80,6 +82,7 @@ class VoterRegistrationSerializer(serializers.Serializer):
         return value
 
     def validate_station_id(self, value):
+        # Only allow registration into active stations.
         if not VotingStation.objects.filter(pk=value, is_active=True).exists():
             raise serializers.ValidationError("Invalid or inactive voting station.")
         return value
